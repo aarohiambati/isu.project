@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>—</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --void:#0c0908;
+    --linen:#ddd2c0;
+    --linen-dim:#7c715f;
+    --madder:#b2332a;
+    --madder-soft:#cf5a4c;
+    --madder-hot:#ec8472;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:var(--void);
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  body{font-family:'Fraunces',serif;font-weight:300;}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block;cursor:grab;touch-action:none;}
+  canvas.grabbing{cursor:grabbing;}
+  /* the single word */
+  #word{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10;
+    font-size:clamp(1rem,2.4vw,1.4rem);letter-spacing:.55em;text-transform:lowercase;
+    color:var(--linen-dim);pointer-events:none;opacity:0;transition:opacity 1.4s ease, color 1.2s ease;
+    text-indent:.55em;}
+  #word.show{opacity:.85}
+  /* the arrival line, only at the very end */
+  #coda{position:fixed;left:0;right:0;bottom:11vh;text-align:center;z-index:10;
+    font-style:italic;font-size:clamp(1.05rem,2.6vw,1.5rem);color:var(--linen-dim);
+    opacity:0;transition:opacity 3s ease 1s;pointer-events:none;padding:0 8vw;text-wrap:balance;line-height:1.4;}
+  #coda.show{opacity:.8}
+  #title{position:fixed;left:0;right:0;bottom:5vh;text-align:center;z-index:10;
+    font-size:.7rem;letter-spacing:.5em;text-transform:uppercase;color:var(--linen-dim);
+    opacity:0;transition:opacity 3s ease 2.2s;pointer-events:none;}
+  #title.show{opacity:.45}
+  /* grain */
+  body::after{content:"";position:fixed;inset:0;z-index:20;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+  body::before{content:"";position:fixed;inset:0;z-index:19;pointer-events:none;
+    background:radial-gradient(ellipse at 50% 45%, transparent 38%, rgba(0,0,0,.6));}
+  /* replay */
+  #replay{position:fixed;right:5vw;bottom:5vh;z-index:11;font-family:'Fraunces',serif;
+    font-size:.65rem;letter-spacing:.4em;text-transform:uppercase;color:var(--linen-dim);
+    background:none;border:none;cursor:pointer;opacity:0;transition:opacity 2s ease 3s;}
+  #replay.show{opacity:.4}
+  #replay:hover{opacity:.8}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="word">pull</div>
+<div id="coda">What the thread reached, it could not bring back.</div>
+<div id="title">one thread</div>
+<button id="replay">again</button>
+
+<script>
+/* =======================================================================
+   AN EXPERIENCE — no essay, ~2 words.
+   A woven cloth (a family). One red thread you can grab and PULL.
+   Pulling tears the weave: binds snap, strands fall away, warmth drains.
+   The red never ends. The cost lands in your hand.
+   When little is left, the word turns to "let go".
+   RELEASE -> the red disperses into survivors; they re-knit to each other.
+   The fallen do not return. Bittersweet: warmth comes back, smaller.
+   The reader DOES the thesis. They are not told it.
+   ======================================================================= */
+const c = document.getElementById('c');
+const x = c.getContext('2d');
+const wordEl = document.getElementById('word');
+const codaEl = document.getElementById('coda');
+const titleEl = document.getElementById('title');
+const replayEl = document.getElementById('replay');
+
+let W,H,DPR;
+function resize(){
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  W=c.clientWidth;H=c.clientHeight;
+  c.width=W*DPR;c.height=H*DPR;
+  x.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize',()=>{resize();});
+
+/* ---------- colour helpers ---------- */
+function hex(h){h=h.replace('#','');if(h.length===3)h=h.split('').map(s=>s+s).join('');return[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+const LIN=hex('#ddd2c0'), MAD=hex('#b2332a');
+function mix(a,b,m){return `rgb(${a.map((v,i)=>Math.round(v+(b[i]-v)*m)).join(',')})`;}
+
+/* ---------- the weave ---------- */
+let strands=[];   // vertical "kin" threads. one is the red avenger thread.
+let binds=[];     // horizontal knots holding neighbours together
+let particles=[];
+let redIndex=0;   // which strand is the red thread
+let phase='idle'; // idle -> pulling -> collapsing -> released -> settled
+let pull=0;       // accumulated pull (0..1-ish), how much has been torn
+let warmth=1;     // global life of the cloth (drains as you pull)
+let disperse=0;   // 0..1 after release: red spreads into survivors
+let t=0;
+
+function build(){
+  strands=[];binds=[];particles=[];
+  pull=0;warmth=1;disperse=0;phase='idle';
+  const n=Math.max(11,Math.min(22,Math.round(W/70)));
+  const margin=W*0.12, span=W-margin*2, gap=span/(n-1);
+  redIndex=Math.floor(n/2);
+  for(let i=0;i<n;i++){
+    strands.push({
+      i, x0:margin+gap*i,
+      amp:5+Math.random()*7, ph:Math.random()*6.28, sp:.25+Math.random()*.4,
+      alive:true, fall:0, vfall:0, fade:1, slack:0, warmth:0,
+      isRed:i===redIndex,
+      reach:0,          // red thread: how far it's been pulled
+      grabY:H*0.5
+    });
+  }
+  // binds between neighbours, several up the height
+  for(let i=0;i<n-1;i++){
+    const rows=7;
+    for(let r=0;r<rows;r++){
+      binds.push({a:i,b:i+1,y:(r+0.5)/rows,cut:false,snap:0,
+        fell:false,fy:0,vy:0,fx:0,vx:0,rot:0,vrot:0,life:1,sag:0,seed:Math.random()});
+    }
+  }
+}
+
+/* ---------- interaction ---------- */
+let dragging=false, mx=0, my=0;
+function pos(e){
+  const r=c.getBoundingClientRect();
+  const p=e.touches?e.touches[0]:e;
+  mx=p.clientX-r.left; my=p.clientY-r.top;
+}
+function nearRed(){
+  const s=strands[redIndex];
+  // red thread current x near top follows a wander; allow grabbing anywhere along it
+  return Math.abs(mx - s.x0) < Math.max(60, W*0.08);
+}
+function down(e){
+  if(phase==='released'||phase==='settled') return;
+  pos(e);
+  if(nearRed()){
+    dragging=true; c.classList.add('grabbing');
+    if(phase==='idle'){ phase='pulling'; }
+  }
+}
+function move(e){ if(dragging){ pos(e); e.preventDefault(); } }
+function up(){
+  if(!dragging) return;
+  dragging=false; c.classList.remove('grabbing');
+  // releasing during pulling/collapsing => the turn
+  if(phase==='pulling'||phase==='collapsing'){
+    release();
+  }
+}
+c.addEventListener('mousedown',down);
+window.addEventListener('mousemove',move,{passive:false});
+window.addEventListener('mouseup',up);
+c.addEventListener('touchstart',down,{passive:false});
+window.addEventListener('touchmove',move,{passive:false});
+window.addEventListener('touchend',up);
+
+function release(){
+  phase='released';
+  dragging=false;
+  // Decide NOW which severed binds will ever re-knit. Healing is partial and
+  // scarred, never full restoration: only some binds between two *surviving*
+  // neighbours re-tie. Everything else stays cut — permanent loss.
+  for(const bd of binds){
+    bd.canHeal = false;
+    if(bd.cut && !bd.fell && strands[bd.a].alive && strands[bd.b].alive){
+      // only a minority of the still-recoverable damage knits back — rest is scar
+      if(Math.random() < 0.4) bd.canHeal = true;
+    }
+  }
+  // bloom of red off the thread's head, scattering into survivors
+  const s=strands[redIndex];
+  const hx=s.x0, hy=Math.min(s.reach*H, H-4);
+  for(let i=0;i<70;i++){
+    const a=Math.random()*6.28, sp=Math.random()*4;
+    particles.push({x:hx,y:hy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,g:0.01,
+      life:1,decay:0.008+Math.random()*0.012,r:0.8+Math.random()*1.6,col:'236,132,114'});
+  }
+  const alive=strands.filter(z=>z.alive && !z.isRed);
+  alive.forEach(z=>{
+    for(let i=0;i<4;i++){
+      particles.push({x:hx,y:hy,
+        vx:(z.x0-hx)/55+(Math.random()-0.5),
+        vy:(Math.random()*H-hy)/55+(Math.random()-0.5),
+        g:0,life:1,decay:0.009,r:0.8+Math.random()*1.3,col:'180,70,60'});
+    }
+  });
+  wordEl.classList.remove('show');
+}
+
+/* ---------- the pulling logic ---------- */
+function doPull(){
+  const s=strands[redIndex];
+  // the head follows the cursor downward; the further down, the more torn
+  const target=Math.max(0,Math.min(1.15,(my)/H));
+  s.reach += (target - s.reach)*0.12;
+  s.grabY = my;
+  // pull amount tracks how far the thread has been drawn out, monotonic-ish
+  const want=s.reach;
+  if(want>pull){ 
+    // newly torn distance this frame severs binds it passes
+    pull=want;
+  }
+  // the front of destruction = pull * H
+  const frontY=pull*H;
+  for(const bd of binds){
+    const yy=bd.y*H;
+    if(!bd.cut && yy<=frontY){
+      bd.cut=true; bd.snap=0.0001;
+      strands[bd.a].slack+=0.9; strands[bd.b].slack+=0.9;
+      const ax=strands[bd.a].x0, bx=strands[bd.b].x0;
+      spark((ax+bx)/2,yy,'236,132,114',9,3,true);
+    }
+  }
+  // warmth drains with the family actually lost — let go sooner, keep more
+  const kin=strands.filter(s=>!s.isRed).length;
+  const dead=strands.filter(s=>!s.alive&&!s.isRed).length;
+  warmth=Math.max(0.08, 1 - (dead/kin)*1.1);
+}
+
+function spark(px,py,col,n,spread,grav){
+  for(let i=0;i<n;i++){const a=Math.random()*6.28,sp=Math.random()*spread;
+    particles.push({x:px,y:py,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-0.4,
+      g:grav?0.18:0.02,life:1,decay:0.014+Math.random()*0.02,r:0.6+Math.random()*1.4,col});}
+}
+
+/* ---------- per-frame update of strand life ---------- */
+function updateStrands(){
+  // count cut binds per strand to decide who falls
+  const lost=new Array(strands.length).fill(0);
+  const total=new Array(strands.length).fill(0);
+  for(const bd of binds){ total[bd.a]++; total[bd.b]++; if(bd.cut){lost[bd.a]++;lost[bd.b]++;} }
+  const deadCount=strands.filter(s=>!s.alive&&!s.isRed).length;
+  const kin=strands.filter(s=>!s.isRed).length;
+  // never let pulling kill the whole family — a remnant always survives to heal
+  const deathCap=Math.floor(kin*0.6);
+  for(const s of strands){
+    if(s.isRed) continue;
+    s.slack+=(0-s.slack)*0.02;
+    const frac= total[s.i]? lost[s.i]/total[s.i] : 0;
+    if(s.alive && frac>0.7 && deadCount<deathCap && phase!=='released' && phase!=='settled'){
+      // slow cascade: strands near the red thread fall first, outermost cling on
+      const distFromRed=Math.abs(s.i-redIndex);
+      const vuln=Math.max(0.004, 0.03 - distFromRed*0.003);
+      if(Math.random()<vuln){ s.alive=false; s.vfall=0.5+Math.random(); }
+    }
+    if(!s.alive){
+      s.vfall+=0.4; s.fall+=s.vfall;
+      if(s.fall>H*0.2) s.fade-=0.01;
+      if(s.fade<0)s.fade=0;
+    }
+  }
+}
+
+/* ---------- the release / healing ---------- */
+function updateRelease(){
+  disperse=Math.min(1,disperse+0.012);
+  // surviving strands take on warmth (the red, dispersed)
+  for(const s of strands){
+    if(s.isRed){ s.fade-=0.02; if(s.fade<0)s.fade=0; continue; }
+    if(s.alive){ s.warmth+=(disperse*0.8 - s.warmth)*0.05; }
+  }
+  // survivors re-knit only the binds chosen at release — partial, scarred.
+  // All other severed binds remain cut forever (visible gaps = permanent loss).
+  for(const bd of binds){
+    if(bd.canHeal && bd.cut){
+      bd.heal=(bd.heal||0)+0.01;
+      if(bd.heal>=1){bd.cut=false;bd.snap=0;bd.fell=false;bd.life=1;}
+    }
+  }
+  if(disperse>0.6 && phase==='released'){ phase='settled'; }
+}
+
+/* ---------- draw ---------- */
+function strandPath(s,colOverride){
+  const breath=1+Math.sin(t*0.5)*0.1;
+  x.beginPath();
+  const topJit=Math.sin(t*s.sp+s.ph)*s.amp*0.3;
+  x.moveTo(s.x0+topJit, -20 + s.fall);
+  for(let yy=0;yy<=H;yy+=22){
+    const k=yy/H;
+    const off=Math.sin(t*s.sp+s.ph+k*4)*(s.amp*breath+s.slack*16)*(0.3+k*0.7);
+    x.lineTo(s.x0+off, yy + s.fall);
+  }
+  x.strokeStyle=colOverride; x.stroke();
+}
+
+function draw(){
+  x.clearRect(0,0,W,H);
+
+  // ---- binds (the cloth) ----
+  for(const bd of binds){
+    const A=strands[bd.a],B=strands[bd.b];
+    const k=bd.y;
+    const ax=A.x0+Math.sin(t*A.sp+A.ph+k*4)*(A.amp+A.slack*16)*(0.3+k*0.7);
+    const bx=B.x0+Math.sin(t*B.sp+B.ph+k*4)*(B.amp+B.slack*16)*(0.3+k*0.7);
+    const yy=bd.y*H+Math.sin(t*0.6+bd.seed*6)*2 + Math.max(A.fall,B.fall);
+
+    if(!bd.cut){
+      const wm=Math.max(A.warmth,B.warmth);
+      x.strokeStyle=mix(LIN,MAD,wm*0.6);
+      x.globalAlpha=0.5*Math.max(A.fade,B.fade)*(0.4+warmth*0.6);
+      x.lineWidth=1.1; x.beginPath(); x.moveTo(ax,yy);x.lineTo(bx,yy);x.stroke();
+      x.globalAlpha=1;
+    } else if(phase!=='released' && phase!=='settled'){
+      if(bd.snap<1){ bd.snap=Math.min(1,bd.snap+0.08);
+        const f=bd.snap; x.strokeStyle=`rgba(236,132,114,${0.9*(1-f)})`;
+        x.lineWidth=2+(1-f)*1.5; x.beginPath();x.moveTo(ax,yy);x.lineTo(bx,yy);x.stroke();
+      } else {
+        if(!bd.fell){bd.fell=true;bd.vy=0.4+Math.random()*0.8;bd.vx=(Math.random()-0.5)*1.2;bd.vrot=(Math.random()-0.5)*0.06;}
+        if(bd.life>0){
+          bd.vy+=0.4;bd.vx*=0.99;bd.fy+=bd.vy;bd.fx+=bd.vx+Math.sin((t+bd.seed*5)*1.2)*0.4;
+          bd.rot+=bd.vrot;bd.sag=Math.min(16,bd.sag+0.4);
+          if(bd.fy>H*0.2)bd.life-=0.012; if(bd.life<0)bd.life=0;
+          const cx=(ax+bx)/2+bd.fx, cy=yy+bd.fy, half=(bx-ax)/2;
+          x.save();x.translate(cx,cy);x.rotate(bd.rot);
+          x.globalAlpha=bd.life*0.5;x.strokeStyle='rgba(124,113,95,1)';x.lineWidth=1;
+          x.beginPath();x.moveTo(-half,0);x.quadraticCurveTo(0,bd.sag,half,0);x.stroke();
+          x.globalAlpha=1;x.restore();
+        }
+      }
+    } else {
+      // released: only survivor-survivor binds heal back
+      if(A.alive&&B.alive){
+        const h=Math.min(1,(bd.heal||0));
+        x.strokeStyle=mix(LIN,MAD,Math.max(A.warmth,B.warmth)*0.6);
+        x.globalAlpha=h*0.5;x.lineWidth=1.1;x.beginPath();x.moveTo(ax,yy);x.lineTo(bx,yy);x.stroke();x.globalAlpha=1;
+      }
+    }
+  }
+
+  // ---- strands (the kin) ----
+  for(const s of strands){
+    if(s.isRed) continue;
+    if(s.fade<=0) continue;
+    let col;
+    if(phase==='released'||phase==='settled'){
+      col=mix(LIN,MAD,s.warmth*0.7);
+    } else {
+      // alive & warm, dimming toward death as warmth drains / it falls
+      const life=Math.max(0,1-s.slack*0.12)*(s.alive?1:0.6);
+      col=mix(hex('#2c2620'),LIN, life*(0.5+warmth*0.5));
+    }
+    x.globalAlpha=s.fade*(phase==='released'||phase==='settled'?0.9:(0.4+ (s.alive?0.45:0.2)));
+    x.lineWidth=1.2+s.warmth*0.7;
+    strandPath(s,col);
+    x.globalAlpha=1;
+  }
+
+  // ---- the red thread ----
+  const r=strands[redIndex];
+  if(r.fade>0){
+    const reach=Math.max(0.001,r.reach);
+    const frontY=Math.min(reach*H,H-2);
+    const alpha = (phase==='released'||phase==='settled') ? r.fade : 1;
+    // glowing descending line that wanders toward the cursor
+    const headX = r.x0 + (dragging? (mx-r.x0)*0.25 : Math.sin(t*1.1)*8*reach);
+    const grd=x.createLinearGradient(0,0,0,frontY||1);
+    grd.addColorStop(0,`rgba(178,51,42,0)`);
+    grd.addColorStop(0.8,`rgba(178,51,42,${0.7*alpha})`);
+    grd.addColorStop(1,`rgba(207,90,76,${0.95*alpha})`);
+    x.strokeStyle=grd; x.lineWidth=2.2; x.beginPath(); x.moveTo(r.x0,-10);
+    for(let yy=0;yy<=frontY;yy+=16){
+      const k=yy/(frontY||1);
+      const off=(headX-r.x0)*k + Math.sin(t*1.3+yy*0.02)*8*k;
+      x.lineTo(r.x0+off,yy);
+    }
+    x.stroke();
+    // pulsing hot head — the single point bearing the load
+    const hx=r.x0+(headX-r.x0), hy=frontY;
+    const pulse=0.6+Math.sin(t*4)*0.4;
+    const halo=x.createRadialGradient(hx,hy,0,hx,hy,30+pulse*16);
+    halo.addColorStop(0,`rgba(236,132,114,${0.55*alpha*pulse})`);
+    halo.addColorStop(1,'rgba(236,132,114,0)');
+    x.fillStyle=halo;x.beginPath();x.arc(hx,hy,48,0,6.28);x.fill();
+    x.fillStyle=`rgba(245,165,150,${alpha})`;x.beginPath();x.arc(hx,hy,3+pulse,0,6.28);x.fill();
+  }
+
+  // ---- particles ----
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.vy+=p.g;p.x+=p.vx;p.y+=p.vy;p.life-=p.decay;
+    if(p.life<=0||p.y>H+20){particles.splice(i,1);continue;}
+    x.fillStyle=`rgba(${p.col},${p.life})`;
+    x.beginPath();x.arc(p.x,p.y,p.r*p.life+0.3,0,6.28);x.fill();
+  }
+}
+
+/* ---------- word / phase orchestration ---------- */
+let shownLetGo=false, endTriggered=false;
+function orchestrate(){
+  if(phase==='idle'){
+    wordEl.textContent='pull'; wordEl.style.color='var(--linen-dim)';
+    if(!wordEl.classList.contains('show')) wordEl.classList.add('show');
+  }
+  if(phase==='pulling'){
+    wordEl.classList.remove('show');
+    // "let go" surfaces once real loss is underway — but before the family is gone
+    const dead=strands.filter(s=>!s.alive&&!s.isRed).length;
+    const kin=strands.filter(s=>!s.isRed).length;
+    if(pull>0.35 || dead > kin*0.25){
+      phase='collapsing';
+    }
+  }
+  if(phase==='collapsing' && !shownLetGo){
+    shownLetGo=true;
+    wordEl.textContent='let go';
+    wordEl.style.color='var(--madder-soft)';
+    wordEl.classList.add('show');
+  }
+  if((phase==='released'||phase==='settled') && !endTriggered && disperse>0.5){
+    endTriggered=true;
+    codaEl.classList.add('show');
+    titleEl.classList.add('show');
+    replayEl.classList.add('show');
+  }
+}
+
+/* ---------- main loop ---------- */
+function loop(){
+  t+=0.016;
+  if(phase==='pulling'||phase==='collapsing'){ if(dragging) doPull(); }
+  if(phase!=='released'&&phase!=='settled') updateStrands();
+  if(phase==='released'||phase==='settled') updateRelease();
+  orchestrate();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* ---------- replay ---------- */
+replayEl.addEventListener('click',()=>{
+  codaEl.classList.remove('show');
+  titleEl.classList.remove('show');
+  replayEl.classList.remove('show');
+  shownLetGo=false; endTriggered=false;
+  build();
+  setTimeout(()=>{wordEl.classList.add('show');},400);
+});
+
+/* ---------- boot ---------- */
+resize(); build(); 
+requestAnimationFrame(loop);
+setTimeout(()=>wordEl.classList.add('show'), 900);
+
+/* expose for testing */
+window.__state=()=>({phase,pull:+pull.toFixed(2),warmth:+warmth.toFixed(2),
+  disperse:+disperse.toFixed(2),
+  dead:strands.filter(s=>!s.alive&&!s.isRed).length,
+  alive:strands.filter(s=>s.alive&&!s.isRed).length,
+  cut:binds.filter(b=>b.cut).length,
+  totalBinds:binds.length,
+  healable:binds.filter(b=>b.canHeal).length,
+  particles:particles.length});
+window.__pullTo=(v)=>{phase='pulling';dragging=true;my=v*H;doPull();};
+window.__release=()=>{release();};
+window.__step=()=>{ // one logic frame without rAF/draw, for testing
+  t+=0.016;
+  if(phase==='pulling'||phase==='collapsing'){ if(dragging) doPull(); }
+  if(phase!=='released'&&phase!=='settled') updateStrands();
+  if(phase==='released'||phase==='settled') updateRelease();
+  orchestrate();
+};
+</script>
+</body>
+</html>
